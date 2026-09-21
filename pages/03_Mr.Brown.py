@@ -51,31 +51,52 @@ if answers:
         st.error("⚠️ Question database is empty or malformed. Cannot compute cognitive profile.")
         st.stop()
 
-    all_labels = []
     vector_totals = {k: 0.0 for k in vector_labels}
-    detailed_choices = []
+    all_ratings = []
 
     for q in ALL_QUESTIONS:
-        try:
-            q_id = q.get('id')
-            if q_id in answers:
-                choice_key = answers[q_id]
-                opt = q.get("options", {}).get(choice_key, {}) or {}
-                label = opt.get("label", "Unmapped")
-                all_labels.append(label)
-                q_section = q.get('section', f"Query {q_id}")
-                opt_text = opt.get('text', choice_key)
-                detailed_choices.append(f"- {q_section}: {opt_text} (Signaling {label})")
-                for v_key, v_val in (opt.get("vectors", {}) or {}).items():
-                    if v_key in vector_totals:
-                        try:
-                            vector_totals[v_key] += float(v_val)
-                        except (TypeError, ValueError):
-                            continue
-        except AttributeError:
+        q_id = q.get('id')
+        ratings_for_q = answers.get(q_id, {}) or {}
+        if not ratings_for_q:
             continue
 
-    dominant_archetype = max(set(all_labels), key=all_labels.count) if all_labels else "Unclassified"
+        options = q.get("options", {}) or {}
+        q_section = q.get('section', f"Query {q_id}")
+
+        for opt_key, opt_data in options.items():
+            if not isinstance(opt_data, dict):
+                continue
+            rating = ratings_for_q.get(opt_key)
+            if rating is None:
+                continue
+            try:
+                rating = float(rating)
+            except (TypeError, ValueError):
+                continue
+
+            weight = (rating - 3.0) / 2.0
+            vectors = opt_data.get("vectors", {}) or {}
+            for v_key, v_val in vectors.items():
+                if v_key in vector_totals:
+                    try:
+                        vector_totals[v_key] += weight * float(v_val)
+                    except (TypeError, ValueError):
+                        continue
+
+            all_ratings.append({
+                "section": q_section,
+                "text": opt_data.get("text", opt_key),
+                "label": opt_data.get("label", "Unmapped"),
+                "rating": rating,
+            })
+
+    ranked = sorted(all_ratings, key=lambda r: r["rating"], reverse=True)
+    dominant_archetype = ranked[0]["label"] if ranked else "Unclassified"
+
+    detailed_choices = [
+        f"- {m['section']}: {m['text']} (Signaling {m['label']}, rated {int(m['rating'])}/5)"
+        for m in ranked[:8]
+    ]
     detailed_choices_block = "\n".join(detailed_choices) if detailed_choices else "- (No detailed signals on file.)"
 
 else:
@@ -187,13 +208,6 @@ def build_system_prompt(state: MentorState) -> str:
     priority = state.get("selected_techniques") or []
     priority_block = ", ".join(priority) if priority else "(none flagged - pick freely from the library)"
 
-    # UPGRADE : prompt renforce pour mieux exploiter Gemini. Les regles 9 et
-    # 10 sont nouvelles : elles corrigent un vrai probleme observe en test
-    # reel (Gemini inventait son propre jargon type "operational triage
-    # protocol" au lieu de citer une vraie technique de la bibliotheque, et
-    # terminait sur un diagnostic abstrait sans jamais donner d'action
-    # concrete). Les regles 1 a 8 restent celles qui donnaient deja un bon
-    # ton humain et non calibre sur un profil precis.
     return f"""
 [ROLE]
 You are Mr. Brown, an elite, uncompromising, yet deeply invested intellectual mentor and strategist. You work with self-directed students who take ownership of their own learning, whatever subject or field they're actually in - you never assume a specific major, career track, or academic background beyond what's given to you in the CONTEXT below.
@@ -283,8 +297,6 @@ def get_checkpointed_messages():
 def seed_greeting_if_new():
     if get_checkpointed_messages():
         return
-    # UPGRADE : accueil reecrit pour sonner naturel, pas robotique
-    # ("State your business" -> ton bien plus humain).
     greeting = f"Alright, {pseudo}. I've looked at your profile — what are you actually stuck on right now?"
     try:
         mentor_app.update_state(build_config(), {"messages": [AIMessage(content=greeting)]})
@@ -293,7 +305,6 @@ def seed_greeting_if_new():
 
 
 seed_greeting_if_new()
-
 
 
 for m in get_checkpointed_messages():

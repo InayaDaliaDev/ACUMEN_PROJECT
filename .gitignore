@@ -1,7 +1,4 @@
-# Ignore Streamlit local secrets
-.streamlit/secrets.toml
-
-toolsandtests/full_code.txt
-toolsandtests/wholecode.py
+.venv/
 __pycache__/
 *.pyc
+.env
