@@ -8,6 +8,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+import time
 
 try:
     from dotenv import load_dotenv
@@ -15,7 +16,9 @@ try:
 except Exception:
     pass
 
-DEFAULT_FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.8-flash"]
+DEFAULT_FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"]
+TRANSIENT_RETRIES = 2
+RETRY_DELAYS = (0.8, 1.8)
 
 class GeminiAPIError(RuntimeError):
     def __init__(self, status, message, code="api"):
@@ -132,16 +135,22 @@ def invoke_llm_with_fallback(system_prompt, history, api_key, model="gemini-2.5-
 
     last = None
     for candidate in build_fallback_chain(model):
-        try:
-            text = _request(candidate, api_key, system_prompt, contents, temperature, timeout, json_mode)
-            return text
-        except GeminiAPIError as error:
-            last = error
-            # Don't hide authentication, quota or request errors behind another model attempt.
-            if error.status in (400, 401, 403, 429):
-                break
-            # A missing model is worth trying against the fallback chain.
-            if error.status not in (404, 500, 502, 503, 504):
+        for attempt in range(TRANSIENT_RETRIES + 1):
+            try:
+                return _request(candidate, api_key, system_prompt, contents, temperature, timeout, json_mode)
+            except GeminiAPIError as error:
+                last = error
+                # FIX: Never retry authentication, quota, or malformed-request errors.
+                if error.status in (400, 401, 403, 429):
+                    break
+                # UPGRADE: Transient failures get a short backoff before ACUMEN
+                # tries the next model. This makes intermittent 5xx/network failures
+                # much less visible to the student.
+                transient = error.status in (408, 500, 502, 503, 504) or error.code in ("network", "timeout")
+                if transient and attempt < TRANSIENT_RETRIES:
+                    time.sleep(RETRY_DELAYS[attempt])
+                    continue
+                # A missing model is worth trying against the fallback chain.
                 break
 
     raise last or GeminiAPIError(503, "All Gemini model attempts failed", "service")

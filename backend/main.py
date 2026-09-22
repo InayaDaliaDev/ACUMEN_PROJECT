@@ -179,22 +179,58 @@ Answer the student's actual message first. Connect the profile only when it genu
 @app.post("/api/ai/advice")
 def advice(x: AI):
     p = x.profile or {}
+    axes = p.get("axes", [])
+    deterministic = p.get("advice", [])
     system = """
-You are ACUMEN's evidence-informed student coach. Create a short, practical intervention.
-Use only established learning/motivation mechanisms: retrieval practice, spacing, interleaving,
-worked examples, implementation intentions, metacognitive monitoring, autonomy, competence and relatedness.
-Do not diagnose. Do not use fake neuroscience. Treat the profile as a hypothesis, not a fact.
-Return strict JSON with keys: title, explanation, action, action_minutes, mechanism, caveat.
+You are ACUMEN's evidence-informed personal study coach.
+The student has completed a self-report learning profile. The profile is NOT a diagnosis,
+not a fixed personality type, and not a validated clinical or admissions test. Treat every
+score as a useful hypothesis that must be checked against the student's actual experience.
+
+Your job is to turn what the student reported about themselves into genuinely useful advice.
+Do not merely restate their scores. For each important signal, explain what it could mean for
+studying, what it does NOT prove, and what concrete behavior would test or improve it.
+Use established mechanisms only: retrieval practice, spacing, interleaving, worked examples,
+metacognitive monitoring, implementation intentions, autonomy, competence and relatedness.
+Never use brain types, dopamine myths, diagnosis, invented neuroscience, or fake citations.
+
+Return strict JSON with exactly these keys:
+{
+  "title": string,
+  "reading": string,
+  "what_this_may_mean": [string],
+  "what_not_to_infer": [string],
+  "actions": [{"action": string, "why": string, "minutes": number}],
+  "check": string,
+  "mechanisms": [string]
+}
+Give 2-4 actions. Make them specific enough to do today. Do not make every action a generic
+"study more" instruction. Base the advice on the student's actual reported signals below.
 """
+    user = {
+        "profile_axes": axes,
+        "existing_evidence_informed_advice": deterministic,
+        "strongest": p.get("strongest"),
+        "weakest": p.get("weakest"),
+        "student_message": x.prompt,
+    }
     try:
         data = extract_json_block(
-            generate_text(system, json.dumps(p, ensure_ascii=False), x.api_key, x.model, .35, 60, json_mode=True)
+            generate_text(system, json.dumps(user, ensure_ascii=False), x.api_key, x.model, .35, 60, json_mode=True)
         )
-        if not isinstance(data, dict) or not data.get("action"):
+        if not isinstance(data, dict) or not data.get("title") or not data.get("actions"):
             raise ValueError("Invalid advice JSON")
+        if not isinstance(data["actions"], list) or not (2 <= len(data["actions"]) <= 4):
+            raise ValueError("Invalid advice actions")
+        for item in data["actions"]:
+            if not isinstance(item, dict) or not item.get("action") or not item.get("why"):
+                raise ValueError("Invalid advice action")
         return data
+    except ValueError:
+        logger.exception("Advice output validation failed")
+        raise HTTPException(502, detail={"kind": "output", "message": "Gemini answered, but ACUMEN could not turn the response into reliable advice. Try again."})
     except Exception as e:
-        logger.exception("ACUMEN AI request failed")
+        logger.exception("ACUMEN AI advice failed")
         k, m = classify_error(e)
         raise HTTPException(503, detail={"kind": k, "message": m})
 
@@ -219,7 +255,8 @@ def quiz(x: Quiz):
     system = f'''You are ACUMEN Quiz Forge. Create exactly {x.num_questions} multiple-choice questions from ONLY the supplied study material.
 Test understanding, retrieval and application, not trivia. Every question must be answerable from the source.
 Return JSON only, with no markdown, commentary or code fences. Use exactly this shape: {{"questions":[{{"question":"...","options":{{"A":"...","B":"...","C":"...","D":"..."}},"correct":"A","explanation":"..."}}]}}.
-The correct field must be exactly A, B, C or D. Keep explanations short. Never invent facts outside the source.'''
+The correct field must be exactly A, B, C or D. Keep explanations short. Never invent facts outside the source.
+Before returning JSON, verify that every question has four non-empty options, exactly one correct option, and an explanation that matches that option. If the source is insufficient for the requested number of questions, reuse distinct concepts from the supplied source rather than inventing facts.'''
     try:
         raw = generate_text(system, x.source_text[:45000], x.api_key, x.model, .4, 90, json_mode=True)
         data = extract_json_block(raw)
