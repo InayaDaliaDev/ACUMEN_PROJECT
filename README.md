@@ -1,24 +1,41 @@
-# ACUMEN 3.0
+# ACUMEN — Student Lab
 
-Student-built metacognitive learning lab.
+ACUMEN is a student-built metacognitive study lab. It combines a Likert self-reflection scan, a practical blueprint, longitudinal history, an AI mentor, scenario simulations, a quiz generator and a study roadmap.
 
-## Stack
-- FastAPI backend
-- Vanilla HTML/CSS/JavaScript frontend
-- Supabase Auth + Postgres + RLS
-- Gemini through the existing Python AI engine
+## Run locally
 
-## Run
+From the project root:
+
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8001
 ```
-Then open `http://127.0.0.1:8001`.
 
-## Supabase
-The app uses the `Small Projects` Supabase project. The browser uses the publishable key only. Anonymous Auth must be enabled in Supabase Auth for history/profile persistence to work without email registration.
+Open `http://127.0.0.1:8001`.
 
-## AI
-Assessment, history and the blueprint do not require a Gemini key. The mentor, quiz forge, simulations and roadmap do.
+FastAPI docs: `http://127.0.0.1:8001/docs`
 
-## Research layer
-Advice is deliberately built around evidence-informed mechanisms including retrieval practice, spacing, interleaving, metacognitive monitoring, implementation intentions and Self-Determination Theory. ACUMEN does not present its profile as a validated clinical or diagnostic instrument.
+## AI configuration
+
+Put `GEMINI_API_KEY` in the backend environment if you want ACUMEN to use one server-side key. The Settings page also supports a browser-local BYOK key. Never commit real keys.
+
+## Persistence
+
+ACUMEN works without Supabase Auth by using localStorage. When an authenticated Supabase session exists, scans, profiles, conversations and feedback are synchronized to Supabase under RLS policies.
+
+Anonymous sign-in is intentionally **not** called automatically. If Anonymous Sign-Ins are enabled later in Supabase, an auth flow can be added without changing the assessment UI.
+
+## Architecture
+
+- `frontend/` — HTML + CSS + vanilla JavaScript
+- `backend/` — FastAPI API and assessment service
+- `core/` — AI engine and shared utilities
+- `data/` — question bank
+- `pages/` + `acumen_app.py` — legacy Streamlit implementation kept during migration
+
+## Safety / limits
+
+ACUMEN is an educational self-reflection tool, not a clinical diagnosis or validated intelligence test. AI outputs can be wrong and should be treated as hypotheses and experiments, not authority.
+
+
+## Product principle
+An account is optional. The scan, blueprint and local history work without one. Account creation exists only for cross-device history.
