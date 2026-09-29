@@ -567,7 +567,10 @@ function renderQuiz(quizData) {
   const output = $('#quizout');
   if (!output) return;
   let answers = {};
-  output.innerHTML = quizData.questions.map((question, index) => `<article class="card quiz-card"><span class="tag">QUESTION ${index + 1}</span><h3>${esc(question.question)}</h3>${Object.entries(question.options).map(([key, value]) => `<button type="button" class="option-btn" data-q="${index}" data-a="${esc(key)}">${key}. ${esc(value)}</button>`).join('')}<div class="exp" hidden></div></article>`).join('') + '<button id="grade" type="button" class="btn primary">Evaluate answers</button><div id="score" style="margin-top:18px"></div>';
+  const modeNotice = quizData.mode === 'local_fallback'
+    ? '<div class="notice" style="margin-bottom:18px"><b>Local recovery mode.</b> Gemini was temporarily unavailable, so ACUMEN built this quiz directly from your study material. No outside facts were added.</div>'
+    : '';
+  output.innerHTML = modeNotice + quizData.questions.map((question, index) => `<article class="card quiz-card"><span class="tag">QUESTION ${index + 1}</span><h3>${esc(question.question)}</h3>${Object.entries(question.options).map(([key, value]) => `<button type="button" class="option-btn" data-q="${index}" data-a="${esc(key)}">${key}. ${esc(value)}</button>`).join('')}<div class="exp" hidden></div></article>`).join('') + '<button id="grade" type="button" class="btn primary">Evaluate answers</button><div id="score" style="margin-top:18px"></div>';
   $$('.option-btn', output).forEach(button => button.onclick = () => {
     answers[button.dataset.q] = button.dataset.a;
     $$(`[data-q="${CSS.escape(button.dataset.q)}"]`, output).forEach(item => item.classList.remove('selected'));

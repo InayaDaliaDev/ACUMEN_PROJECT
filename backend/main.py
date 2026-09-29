@@ -81,7 +81,7 @@ def config():
     # FIX: The publishable Supabase key is safe for browser use. Never expose a secret/service_role key here.
     return {
         "supabase_url": os.getenv("SUPABASE_URL", "https://uqdxwzfvunftueqqofwi.supabase.co"),
-        "supabase_publishable_key": os.getenv("SUPABASE_PUBLISHABLE_KEY", "sb_publishable_Kk5ifh-1XIxP1IAknEWMoQ_f7xS0w7c"),
+        "supabase_key": os.getenv("SUPABASE_KEY", "sb_publishable_Kk5ifh-1XIxP1IAknEWMoQ_f7xS0w7c"),
     }
 
 
@@ -250,6 +250,81 @@ def _simulation(x: Sim, system: str):
         k, m = classify_error(e)
         raise HTTPException(503, detail={"kind": k, "message": m})
 
+
+
+# UPGRADE: Local Quiz Forge fallback. Gemini remains the primary generator, but a
+# temporary provider outage must not turn a study tool into a 503 page. This
+# fallback creates source-grounded cloze questions without inventing facts.
+def _local_quiz(source_text: str, count: int) -> dict:
+    import re
+    import random
+
+    raw_sentences = re.split(r"(?<=[.!?])\s+|\n{2,}", source_text.strip())
+    sentences = [re.sub(r"\s+", " ", s).strip() for s in raw_sentences if len(s.strip()) >= 45]
+
+    stop = {
+        "about", "after", "again", "against", "because", "before", "being",
+        "between", "could", "every", "first", "from", "have", "into", "more",
+        "other", "over", "their", "there", "these", "those", "through", "under",
+        "using", "which", "while", "where", "would", "this", "that", "with",
+        "than", "then", "they", "them", "when", "what", "also", "such", "some",
+        "only", "each", "both", "very", "most", "many", "your", "will", "were",
+        "been", "from", "into", "whose", "does", "its", "are", "was", "and", "the",
+    }
+
+    candidates = []
+    answer_pool = []
+    for sentence in sentences:
+        words = re.findall(r"\b[A-Za-z][A-Za-z0-9-]{4,}\b", sentence)
+        useful = [w for w in words if w.lower() not in stop and not w.isupper()]
+        if useful:
+            # Prefer a substantive term for the blank, while keeping all useful
+            # source vocabulary available as distractors.
+            answer = max(useful, key=lambda w: (len(w), w.lower()))
+            candidates.append((sentence, answer))
+            for word in useful:
+                clean = word.strip(".,;:!?()[]{}\"'")
+                if clean and clean.lower() not in {w.lower() for w in answer_pool}:
+                    answer_pool.append(clean)
+
+    if not candidates:
+        raise ValueError("Not enough readable study material for a local quiz.")
+
+    # Reuse source concepts when the material is shorter than the requested quiz.
+    selected = [candidates[i % len(candidates)] for i in range(count)]
+    questions = []
+    for index, (sentence, answer) in enumerate(selected, start=1):
+        pattern = re.compile(r"\b" + re.escape(answer) + r"\b", re.IGNORECASE)
+        stem = pattern.sub("□" * min(max(len(answer), 4), 8), sentence, count=1)
+        distractors = [w for w in answer_pool if w.lower() != answer.lower()]
+        # Deterministic rotation keeps tests reproducible and avoids random quiz drift.
+        rotated = distractors[index % len(distractors):] + distractors[:index % len(distractors)] if distractors else []
+        # Build three distinct distractors first, then insert the correct answer.
+        unique = []
+        for option in rotated:
+            if option.lower() != answer.lower() and option.lower() not in {w.lower() for w in unique}:
+                unique.append(option)
+            if len(unique) == 3:
+                break
+        if len(unique) < 3:
+            raise ValueError("Study material does not contain enough distinct terms for a local quiz.")
+
+        # Put the correct answer in a predictable but non-fixed position.
+        shift = index % 4
+        ordered = unique[:3]
+        ordered.insert(shift, answer)
+        ordered = ordered[:4]
+        labels = {letter: value for letter, value in zip(("A", "B", "C", "D"), ordered)}
+        correct = next(letter for letter, value in labels.items() if value.lower() == answer.lower())
+        questions.append({
+            "question": f"Complete the statement from the study material: {stem}",
+            "options": labels,
+            "correct": correct,
+            "explanation": f"The source states: {sentence}",
+        })
+
+    return {"questions": questions, "mode": "local_fallback"}
+
 @app.post("/api/quiz/generate")
 def quiz(x: Quiz):
     system = f'''You are ACUMEN Quiz Forge. Create exactly {x.num_questions} multiple-choice questions from ONLY the supplied study material.
@@ -275,10 +350,21 @@ Before returning JSON, verify that every question has four non-empty options, ex
     except ValueError as e:
         logger.exception("Quiz output validation failed")
         raise HTTPException(502, detail={"kind": "output", "message": "Gemini responded, but Quiz Forge received an incomplete quiz. Try 5 questions or a shorter source."})
+    except ValueError as e:
+        logger.exception("Quiz output validation failed")
+        # UPGRADE: Validation failures still try the local generator. A malformed
+        # AI response is not a reason to discard the student's study material.
+        try:
+            return _local_quiz(x.source_text, x.num_questions)
+        except Exception:
+            raise HTTPException(502, detail={"kind": "output", "message": "Quiz Forge could not build a reliable quiz from this material. Try a shorter or more text-rich source."})
     except Exception as e:
-        logger.exception("ACUMEN AI request failed")
-        k, m = classify_error(e)
-        raise HTTPException(503, detail={"kind": k, "message": m})
+        logger.exception("ACUMEN AI request failed; switching Quiz Forge to local mode")
+        try:
+            return _local_quiz(x.source_text, x.num_questions)
+        except Exception:
+            k, m = classify_error(e)
+            raise HTTPException(503, detail={"kind": k, "message": m})
 
 @app.post("/api/quiz/extract")
 async def extract(file: UploadFile = File(...)):
