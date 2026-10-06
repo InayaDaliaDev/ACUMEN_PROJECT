@@ -25,9 +25,10 @@ async function bootSupabase() {
 
   try {
     const cfg = await fetch('/api/config', { cache: 'no-store' }).then(r => r.ok ? r.json() : null);
-    if (!cfg?.supabase_url || !cfg?.supabase_publishable_key) return null;
+    const publishableKey = cfg?.supabase_publishable_key || cfg?.supabase_key;
+    if (!cfg?.supabase_url || !publishableKey) return null;
 
-    supabaseClient = window.supabase.createClient(cfg.supabase_url, cfg.supabase_publishable_key);
+    supabaseClient = window.supabase.createClient(cfg.supabase_url, publishableKey);
     const { data, error } = await supabaseClient.auth.getSession();
     if (!error && data?.session?.user) currentUser = data.session.user;
     return currentUser;
@@ -668,12 +669,49 @@ async function syncLocalHistoryToCloud(user) {
 async function account() {
   const signup = $('#signup');
   const login = $('#login');
+  const forgot = $('#forgot');
+  const resetPassword = $('#resetPassword');
+  const forgotPanel = $('#forgotPanel');
+  const resetPanel = $('#resetPanel');
   const signupButton = signup ? $('button[type="submit"]', signup) : null;
   const loginButton = login ? $('button[type="submit"]', login) : null;
   const status = $('#accountStatus');
+  const resetMode = new URLSearchParams(location.search).get('mode') === 'reset';
   const user = await ensureUser();
 
   const showStatus = message => { if (status) status.textContent = message; };
+
+  if (resetMode) {
+    if (signup) signup.style.display = 'none';
+    if (login) login.style.display = 'none';
+    if (forgotPanel) forgotPanel.style.display = 'none';
+    if (resetPanel) resetPanel.style.display = 'block';
+    if (!supabaseClient) {
+      showStatus('Account service is unavailable right now. Please reopen the recovery link from the same deployment.');
+      return;
+    }
+    if (resetPassword) resetPassword.onsubmit = async event => {
+      event.preventDefault();
+      const data = formDataObject(resetPassword);
+      const password = String(data.password || '');
+      const confirm = String(data.confirm || '');
+      if (password.length < 6) return toast('Use a password of at least 6 characters.', 'warn');
+      if (password !== confirm) return toast('The two passwords do not match.', 'warn');
+      const button = $('button[type="submit"]', resetPassword);
+      try {
+        setBusy(button, true, 'Updating…');
+        const { error } = await supabaseClient.auth.updateUser({ password });
+        if (error) throw error;
+        showStatus('Password updated. Your account is ready to use again.');
+        resetPassword.reset();
+        setTimeout(() => { location.href = '/account.html'; }, 900);
+      } catch (error) {
+        console.error('Password reset failed:', error);
+        toast(error.message || 'Could not update your password.', 'warn');
+      } finally { setBusy(button, false); }
+    };
+    return;
+  }
 
   if (user) {
     showStatus(`Signed in as ${user.email || 'your account'}.`);
@@ -682,7 +720,7 @@ async function account() {
     const actions = $('#accountActions');
     if (actions) actions.innerHTML = `<a class="btn primary" href="/history.html">Open my history ↗</a> <button id="signout" class="btn" type="button">Sign out</button>`;
     $('#signout')?.addEventListener('click', async () => {
-      if (supabaseClient) await supabaseClient.auth.signOut();
+      if (supabaseClient) await supabaseClient.auth.signOut({ scope: 'local' });
       currentUser = null;
       toast('Signed out. Local scans remain on this device.');
       setTimeout(() => location.reload(), 250);
@@ -690,9 +728,35 @@ async function account() {
     return;
   }
 
-  if (!supabaseClient) {
-    showStatus('Account service is unavailable right now. Your scans remain saved locally on this device.');
-  }
+  if (!supabaseClient) showStatus('Account service is unavailable right now. Your scans remain saved locally on this device.');
+
+  $('#showForgot')?.addEventListener('click', () => {
+    if (forgotPanel) forgotPanel.style.display = 'block';
+    const email = login?.elements?.email?.value || '';
+    if (forgot?.elements?.email) forgot.elements.email.value = email;
+    forgot?.elements?.email?.focus();
+  });
+  $('#hideForgot')?.addEventListener('click', () => { if (forgotPanel) forgotPanel.style.display = 'none'; });
+
+  if (forgot) forgot.onsubmit = async event => {
+    event.preventDefault();
+    if (!supabaseClient) return toast('Account service is unavailable right now.', 'warn');
+    const button = $('button[type="submit"]', forgot);
+    try {
+      const data = formDataObject(forgot);
+      const email = String(data.email || '').trim();
+      if (!email) return toast('Enter the email used for your account.', 'warn');
+      setBusy(button, true, 'Sending…');
+      const redirectTo = `${location.origin}/account.html?mode=reset`;
+      const { error } = await supabaseClient.auth.resetPasswordForEmail(email, { redirectTo });
+      if (error) throw error;
+      showStatus('If that email can receive a recovery link, check its inbox and open the link on this device.');
+      if (forgotPanel) forgotPanel.style.display = 'none';
+    } catch (error) {
+      console.error('Password recovery request failed:', error);
+      toast(error.message || 'Could not send the recovery email.', 'warn');
+    } finally { setBusy(button, false); }
+  };
 
   if (signup) signup.onsubmit = async event => {
     event.preventDefault();
@@ -746,7 +810,6 @@ async function account() {
     } finally { setBusy(loginButton, false); }
   };
 }
-
 function settings() {
   const form = $('#settings');
   if (!(form instanceof HTMLFormElement)) return;

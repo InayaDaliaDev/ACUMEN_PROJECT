@@ -79,9 +79,11 @@ def health():
 @app.get("/api/config")
 def config():
     # FIX: The publishable Supabase key is safe for browser use. Never expose a secret/service_role key here.
+    publishable_key = os.getenv("SUPABASE_KEY", "sb_publishable_Kk5ifh-1XIxP1IAknEWMoQ_f7xS0w7c")
     return {
         "supabase_url": os.getenv("SUPABASE_URL", "https://uqdxwzfvunftueqqofwi.supabase.co"),
-        "supabase_key": os.getenv("SUPABASE_KEY", "sb_publishable_Kk5ifh-1XIxP1IAknEWMoQ_f7xS0w7c"),
+        "supabase_publishable_key": publishable_key,
+        "supabase_key": publishable_key,
     }
 
 
